@@ -387,6 +387,7 @@ function saveMessageFromClient(host, roomId, clientId, message, callback) {
     } else {
       var client = room.getClient(clientId);
       client.addMessage(text);
+      console.log(client.messages);
       console.log('Saved message for client ' + clientId + ':' + client.toString() + ' in room ' + roomId);
       callback(null, true);
     }
@@ -517,7 +518,6 @@ router.post('/leave/:roomId/:clientId', function(req, res, next) {
     }
   });
   infoRecord(clientId, roomId);
-  inviteEnd(end_tokens[roomId], roomId, req);
   res.send({ result: constants.RESPONSE_SUCCESS });
 });
 
@@ -570,7 +570,7 @@ router.post('/kick/:roomId/:clientId', function(req, res) {
   postRequest.end();
 });
 
-router.post('/bye/:roomId/:clientId', function(req, res) {
+router.post('/bbye/:roomId/:clientId', function(req, res) {
   var roomId = req.params.roomId;
   var clientId = req.params.clientId;
   var key = getCacheKeyForRoom(req.headers.host, roomId);
@@ -599,14 +599,13 @@ router.post('/bye/:roomId/:clientId', function(req, res) {
       });
     }
   });
-  inviteEnd(end_tokens[roomId], roomId, req);
   infoRecord(clientId, roomId);
   res.send({ result: constants.RESPONSE_SUCCESS });
 });
 
 var server = '115.29.105.159';
 var end_tokens = {};
-
+var timestamps = {};
 
 function inviteCheck(usrId, token, inviteId) {
   var data = {
@@ -635,6 +634,7 @@ function inviteCheck(usrId, token, inviteId) {
       var json = JSON.parse(body);
       if (json.data) {
         end_tokens[inviteId] = json.data.end_token;
+        timestamps[inviteId] = json.data.timestamp;
       }
     });
   }).on('error', function(err){
@@ -646,6 +646,7 @@ function inviteCheck(usrId, token, inviteId) {
 
   req.write(data1);
   req.end();//结束请求
+  return body;
 }
 
 function inviteEnd(end_token, inviteId, request) {
@@ -707,7 +708,12 @@ router.post('/join', function(req, res) {
   var token = req.body.token;
   var inviteId = req.body.inviteId;
   console.log("join " + usrId + " " + token + " " + inviteId);
-  inviteCheck(usrId, token, inviteId);
+  var data=inviteCheck(usrId, token, inviteId);
+  var result = JSON.parse(data);
+  if (result.retcode != 0) {
+    res.send('fail');
+    return;
+  }
   var isLoopback = req.query['debug'] == 'loopback';
   addClientToRoom(req, inviteId, usrId, isLoopback, function(error, result) {
     if (error) {
@@ -720,5 +726,23 @@ router.post('/join', function(req, res) {
   });
   res.send('ws://'+ADDRESS+':8000/ws');
 });
+
+function timeout(){
+  console.log('time_out');
+
+}
+
+var t = setTimeout(timeout,1000);
+
+router.post('/invite_end', function(req, res) {
+  var end_token = req.body.end_token;
+  var inviteId = req.body.inviteId;
+  if (end_token == end_tokens[inviteId]) {
+    inviteEnd(end_token, inviteId, req);
+  } else {
+    res.send('fail');
+  }
+});
+
 
 module.exports = router;
