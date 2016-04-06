@@ -382,12 +382,9 @@ function saveMessageFromClient(host, roomId, clientId, message, callback) {
     } else if (!room.hasClient(clientId)) {
       console.warn('Unknown client: ' + clientId);
       callback({error: constants.RESPONSE_UNKNOWN_CLIENT}, false);
-    } else if (room.getOccupancy() > 1) {
-      callback(null, false);
     } else {
       var client = room.getClient(clientId);
       client.addMessage(text);
-      console.log(client.messages);
       console.log('Saved message for client ' + clientId + ':' + client.toString() + ' in room ' + roomId);
       callback(null, true);
     }
@@ -420,7 +417,6 @@ router.post('/join/:roomId', function(req, res, next) {
     });
     console.log('User ' + clientId + ' joined room ' + roomId);
     console.log('Room ' + roomId + ' has state ' + result.room_state);
-
   });
 });
 
@@ -518,57 +514,10 @@ router.post('/leave/:roomId/:clientId', function(req, res, next) {
     }
   });
   infoRecord(clientId, roomId);
+  inviteIds.remove
   res.send({ result: constants.RESPONSE_SUCCESS });
 });
 
-router.post('/query/client/:clientId', function(req, res) {
-  var clientId = req.params.clientId;
-  clients.get(clientId, function(error, client) {
-    if(!client) {
-      res.send({result: constants.RESPONSE_UNKNOWN_CLIENT});
-    } else {
-      res.send(client);
-    }
-  });
-});
-
-router.post('/query/room/:roomId', function(req, res) {
-  var roomId = req.params.roomId;
-  var key = getCacheKeyForRoom(req.headers.host, roomId);
-  rooms.get(key, function(error, room) {
-    if(!room) {
-      console.log("Unknown room: " + roomId);
-      res.send({ result: constants.RESPONSE_UNKNOWN_ROOM });
-    } else {
-      res.send(room.toString());
-    }
-  });
-});
-
-router.post('/kick/:roomId/:clientId', function(req, res) {
-  var roomId = req.params.roomId;
-  var clientId = req.params.clientId;
-  var postOptions = {
-    host: ADDRESS,
-    port: 8000,
-    path: '/' + roomId + '/' + clientId,
-    method: 'POST'
-  };
-
-  var postRequest = http.request(postOptions, function(httpRes) {
-    if (httpRes.statusCode == 200) {
-      res.send({ result: constants.RESPONSE_SUCCESS });
-    } else {
-      console.error('Failed to send message to collider: ' + httpRes.statusCode);
-      res.status(httpRes.statusCode);
-    }
-  });
-  var message = JSON.stringify({
-    cmd: "kick"
-  });
-  postRequest.write(message);
-  postRequest.end();
-});
 
 router.post('/bbye/:roomId/:clientId', function(req, res) {
   var roomId = req.params.roomId;
@@ -606,6 +555,7 @@ router.post('/bbye/:roomId/:clientId', function(req, res) {
 var server = '115.29.105.159';
 var end_tokens = {};
 var timestamps = {};
+var token_check = {};
 
 function inviteCheck(usrId, token, inviteId) {
   var data = {
@@ -636,6 +586,11 @@ function inviteCheck(usrId, token, inviteId) {
         end_tokens[inviteId] = json.data.end_token;
         timestamps[inviteId] = json.data.timestamp;
       }
+      if (json.retcode == 0) {
+        token_check[usrId] = 'success';
+      } else {
+        token_check[usrId] = 'fail';
+      }
     });
   }).on('error', function(err){
     console.log('error: ', err.message);
@@ -649,8 +604,8 @@ function inviteCheck(usrId, token, inviteId) {
   return body;
 }
 
-function inviteEnd(end_token, inviteId, request) {
-  var key = getCacheKeyForRoom(request.headers.host, inviteId);
+function inviteEnd(end_token, inviteId) {
+  var key = getCacheKeyForRoom(ADDRESS+':3000', inviteId);
   var createTime = null;
   var records = null;
   rooms.get(key, function(error, room) {
@@ -679,7 +634,7 @@ function inviteEnd(end_token, inviteId, request) {
     port: 80,
     path: "/api/invite/end",
     headers: {
-      "Content-Type": 'application/json',
+      "Content-Type": 'application/json'
     }
   };
   var body = '';
@@ -705,15 +660,12 @@ function inviteEnd(end_token, inviteId, request) {
 
 router.post('/join', function(req, res) {
   var usrId = req.body.userId;
-  var token = req.body.token;
+  var end_token = req.body.end_token;
   var inviteId = req.body.inviteId;
-  console.log("join " + usrId + " " + token + " " + inviteId);
-  var data=inviteCheck(usrId, token, inviteId);
-  var result = JSON.parse(data);
-  if (result.retcode != 0) {
-    res.send('fail');
-    return;
-  }
+
+  end_tokens[inviteId] = end_token;
+  console.log("join " + usrId + " " + end_token + " " + inviteId);
+
   var isLoopback = req.query['debug'] == 'loopback';
   addClientToRoom(req, inviteId, usrId, isLoopback, function(error, result) {
     if (error) {
@@ -728,20 +680,52 @@ router.post('/join', function(req, res) {
 });
 
 function timeout(){
-  console.log('time_out');
-
+  var currentTime = new Date().getTime();
+  for (var inviteId in timestamps) {
+    if (timestamps[inviteId] <= currentTime) {
+      inviteEnd(end_tokens[inviteId], inviteId)
+    }
+  }
 }
 
-var t = setTimeout(timeout,1000);
+setInterval(timeout,1000);
 
 router.post('/invite_end', function(req, res) {
   var end_token = req.body.end_token;
   var inviteId = req.body.inviteId;
   if (end_token == end_tokens[inviteId]) {
-    inviteEnd(end_token, inviteId, req);
+    inviteEnd(end_token, inviteId);
   } else {
     res.send('fail');
   }
+});
+
+router.post('/register', function(req, res) {
+  var usrId = req.body.userId;
+//  var token = req.body.token;
+  var inviteId = req.body.inviteId;
+//  inviteCheck(usrId, token, inviteId);
+//  while (!token_check[usrId]) {
+
+ // }
+
+ // if (token_check[usrId] == 'fail') {
+ //   res.send('token check fail');
+ // } else {
+    var key = getCacheKeyForRoom(req.headers.host, inviteId);
+    rooms.get(key, function(error, room) {
+      if (!room) {
+        console.warn('Unknown room: ' + inviteId);
+        callback({error: constants.RESPONSE_UNKNOWN_ROOM}, false);
+      } else if (!room.hasClient(usrId)) {
+        console.warn('Unknown client: ' + usrId);
+        callback({error: constants.RESPONSE_UNKNOWN_CLIENT}, false);
+      } else {
+        var messages = { messages: room.getOtherMessage(usrId)};
+        res.send(JSON.stringify(messages));
+      }
+    });
+//  }
 });
 
 
