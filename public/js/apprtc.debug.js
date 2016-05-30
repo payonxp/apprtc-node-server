@@ -15,6 +15,7 @@ function trace(text) {
     console.log(text);
   }
 }
+
 if (navigator.mozGetUserMedia) {
   console.log("This appears to be Firefox");
   webrtcDetectedBrowser = "firefox";

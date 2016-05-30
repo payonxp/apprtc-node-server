@@ -514,12 +514,11 @@ router.post('/leave/:roomId/:clientId', function(req, res, next) {
     }
   });
   infoRecord(clientId, roomId);
-  inviteIds.remove
   res.send({ result: constants.RESPONSE_SUCCESS });
 });
 
 
-router.post('/bbye/:roomId/:clientId', function(req, res) {
+router.post('/bye/:roomId/:clientId', function(req, res) {
   var roomId = req.params.roomId;
   var clientId = req.params.clientId;
   var key = getCacheKeyForRoom(req.headers.host, roomId);
@@ -531,24 +530,11 @@ router.post('/bbye/:roomId/:clientId', function(req, res) {
       console.warn('Unknown client: ' + clientId);
       callback({error: constants.RESPONSE_UNKNOWN_CLIENT}, false);
     } else {
-      room.removeClient(clientId, function(error, isRemoved, otherClient) {
-        if (error) {
-          res.send({ result: error });
-          return;
-        }
-        if (room.hasClient(constants.LOOPBACK_CLIENT_ID)) {
-          room.removeClient(constants.LOOPBACK_CLIENT_ID, function(error, isRemoved) {
-            res.send({ result: constants.RESPONSE_SUCCESS });
-          });
-        } else {
-          if (otherClient) {
-            otherClient.isInitiator = true;
-          }
-        }
-      });
+      room.bye(clientId);
+      registed[clientId] = false;
+      room.hasClient(clientId).messages = [];
     }
   });
-  infoRecord(clientId, roomId);
   res.send({ result: constants.RESPONSE_SUCCESS });
 });
 
@@ -556,6 +542,7 @@ var server = '115.29.105.159';
 var end_tokens = {};
 var timestamps = {};
 var token_check = {};
+var registed = {};
 
 function inviteCheck(usrId, token, inviteId) {
   var data = {
@@ -601,7 +588,6 @@ function inviteCheck(usrId, token, inviteId) {
 
   req.write(data1);
   req.end();//结束请求
-  return body;
 }
 
 function inviteEnd(end_token, inviteId) {
@@ -646,11 +632,14 @@ function inviteEnd(end_token, inviteId) {
       body += chunk;
     }).on('end', function(){
       console.log('Got data: ', body);
+      var json = JSON.parse(body);
+      if (json.retcode == 0) {
+        rooms.removeRoom(key);
+      }
     });
   }).on('error', function(err){
     console.log('error: ', err.message);
   });
-
   var data1 = JSON.stringify(data);
   console.log(data1);
 
@@ -676,6 +665,7 @@ router.post('/join', function(req, res) {
     console.log('User ' + usrId + ' joined room ' + inviteId);
     console.log('Room ' + inviteId + ' has state ' + result.room_state);
   });
+  registed[usrId] = false;
   res.send('ws://'+ADDRESS+':8000/ws');
 });
 
@@ -694,7 +684,33 @@ router.post('/invite_end', function(req, res) {
   var end_token = req.body.end_token;
   var inviteId = req.body.inviteId;
   if (end_token == end_tokens[inviteId]) {
-    inviteEnd(end_token, inviteId);
+    var createTime = null;
+    var records = null;
+    var key = getCacheKeyForRoom(req.headers.host, inviteId);
+    rooms.get(key, function(error, room) {
+      if(!room) {
+        console.log("Unknown room: " + roomId);
+      } else {
+        var clientList = room.getMemeberId();
+        for (var i=0;i<clientList.length;i++) {
+          room.removeClient(clientList[i], function(a,b,c){});
+        }
+        createTime = room.createTime;
+        records = room.records;
+        var endTime=new Date().toLocaleString();
+        var data = {
+          inviteId: parseInt(inviteId),
+          end_token: end_token,
+          video_info: {
+            //每次进出时间记录
+            records: records,
+            create_time: createTime,
+            end_time: endTime
+          }
+        };
+        res.send(JSON.stringify(data));
+      }
+    });
   } else {
     res.send('fail');
   }
@@ -708,25 +724,53 @@ router.post('/register', function(req, res) {
 //  while (!token_check[usrId]) {
 
  // }
-
  // if (token_check[usrId] == 'fail') {
- //   res.send('token check fail');
- // } else {
+//    res.send('token check fail');
+//  } else {
     var key = getCacheKeyForRoom(req.headers.host, inviteId);
     rooms.get(key, function(error, room) {
       if (!room) {
         console.warn('Unknown room: ' + inviteId);
-        callback({error: constants.RESPONSE_UNKNOWN_ROOM}, false);
+        res.send('Unknown room: ' + inviteId);
+//        callback({error: constants.RESPONSE_UNKNOWN_ROOM}, false);
       } else if (!room.hasClient(usrId)) {
         console.warn('Unknown client: ' + usrId);
-        callback({error: constants.RESPONSE_UNKNOWN_CLIENT}, false);
+        res.send('Unknown client: ' + usrId);
+//        callback({error: constants.RESPONSE_UNKNOWN_CLIENT}, false);
       } else {
-        var messages = { messages: room.getOtherMessage(usrId)};
+        clients.register(room.hasClient(usrId));
+        var messages = {
+          other_status: registed[room.getOtherId(usrId)],
+          messages: room.getOtherMessage(usrId)
+        };
+        registed[usrId] = true;
         res.send(JSON.stringify(messages));
+
       }
     });
 //  }
 });
 
+router.post('/check', function(req, res) {
+  var inviteId = req.body.inviteId;
+  var key = getCacheKeyForRoom(req.headers.host, inviteId);
+  rooms.get(key, function(error, room) {
+    if (!room) {
+      console.warn('Unknown room: ' + inviteId);
+      res.send('Unknown room: ' + inviteId);
+    } else {
+      var clients = room.getMemeberId();
+      var result = {};
+      console.log(clients);
+      console.log(registed);
+      for (var i=0;i<clients.length;i++) {
+        var usr = clients[i];
+        console.log(usr);
+        result[usr] = registed[usr];
+      }
+      res.send(JSON.stringify(result));
+    }
+  })
+});
 
 module.exports = router;
